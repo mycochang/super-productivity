@@ -133,7 +133,6 @@ const mapSearchResult = (card: TrelloCard): PluginSearchResult => {
     title: `${key} ${card.name}`.trim(),
     url: card.url,
     status: card.closed ? 'closed' : 'open',
-    lastUpdated: toMs(card.dateLastActivity),
   };
 };
 
@@ -280,6 +279,45 @@ PluginAPI.registerIssueProvider({
       description: t('CFG.FILTER_USERNAME_DESC'),
       advanced: true,
     },
+    {
+      key: 'twoWaySync.isDone',
+      type: 'select',
+      label: 'Sync Status (Completed / Closed)',
+      description: 'Choose sync direction for card status',
+      options: [
+        { value: 'off', label: 'Off' },
+        { value: 'pullOnly', label: 'Pull Only' },
+        { value: 'pushOnly', label: 'Push Only' },
+        { value: 'both', label: 'Two-Way Sync' },
+      ],
+      advanced: true,
+    },
+    {
+      key: 'twoWaySync.title',
+      type: 'select',
+      label: 'Sync Title (Card Name)',
+      description: 'Choose sync direction for card name',
+      options: [
+        { value: 'off', label: 'Off' },
+        { value: 'pullOnly', label: 'Pull Only' },
+        { value: 'pushOnly', label: 'Push Only' },
+        { value: 'both', label: 'Two-Way Sync' },
+      ],
+      advanced: true,
+    },
+    {
+      key: 'twoWaySync.notes',
+      type: 'select',
+      label: 'Sync Notes (Card Description)',
+      description: 'Choose sync direction for card description',
+      options: [
+        { value: 'off', label: 'Off' },
+        { value: 'pullOnly', label: 'Pull Only' },
+        { value: 'pushOnly', label: 'Push Only' },
+        { value: 'both', label: 'Two-Way Sync' },
+      ],
+      advanced: true,
+    },
   ],
 
   getHeaders(config: Record<string, unknown>): Record<string, string> {
@@ -392,15 +430,29 @@ PluginAPI.registerIssueProvider({
     { field: 'body', label: t('DISPLAY.DESCRIPTION'), type: 'markdown' },
   ],
 
-  // Read-only provider: pull-only mapping drives remote-update detection only.
+  // Read-write provider: both-way mapping drives remote-update and push updates.
   // A Trello card counts as "done" once it is archived (closed).
   fieldMappings: [
     {
       taskField: 'isDone',
       issueField: 'state',
-      defaultDirection: 'pullOnly',
+      defaultDirection: 'both',
       toIssueValue: (taskValue: unknown): string => (taskValue ? 'closed' : 'open'),
       toTaskValue: (issueValue: unknown): boolean => issueValue === 'closed',
+    },
+    {
+      taskField: 'title',
+      issueField: 'title',
+      defaultDirection: 'both',
+      toIssueValue: (taskValue: unknown): string => (taskValue as string) ?? '',
+      toTaskValue: (issueValue: unknown): string => (issueValue as string) ?? '',
+    },
+    {
+      taskField: 'notes',
+      issueField: 'body',
+      defaultDirection: 'both',
+      toIssueValue: (taskValue: unknown): string => (taskValue as string) ?? '',
+      toTaskValue: (issueValue: unknown): string => (issueValue as string) ?? '',
     },
   ] satisfies PluginFieldMapping[],
 
@@ -410,5 +462,24 @@ PluginAPI.registerIssueProvider({
       title: issue.title,
       body: issue.body,
     };
+  },
+
+  async updateIssue(
+    id: string,
+    changes: Record<string, unknown>,
+    _config: Record<string, unknown>,
+    http: PluginHttp,
+  ): Promise<void> {
+    const mappedChanges: Record<string, unknown> = {};
+    if ('state' in changes) {
+      mappedChanges['closed'] = changes['state'] === 'closed';
+    }
+    if ('title' in changes) {
+      mappedChanges['name'] = changes['title'];
+    }
+    if ('body' in changes) {
+      mappedChanges['desc'] = changes['body'];
+    }
+    await http.put(`${TRELLO_API}/cards/${id}`, mappedChanges);
   },
 } satisfies IssueProviderPluginDefinition as IssueProviderPluginDefinition);
