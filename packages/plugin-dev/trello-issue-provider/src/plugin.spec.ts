@@ -31,7 +31,7 @@ const trelloCard = {
 };
 
 describe('Trello issue provider write operations', () => {
-  it('updates card status, title, and description', async () => {
+  it('updates card status and title', async () => {
     const put = vi.fn().mockResolvedValue(undefined);
     const http = { put } as unknown as PluginHttp;
 
@@ -40,7 +40,6 @@ describe('Trello issue provider write operations', () => {
       {
         state: 'closed',
         title: 'Renamed card',
-        body: 'Updated description',
       },
       {},
       http,
@@ -49,7 +48,6 @@ describe('Trello issue provider write operations', () => {
     expect(put).toHaveBeenCalledWith('https://api.trello.com/1/cards/abc123', {
       closed: true,
       name: 'Renamed card',
-      desc: 'Updated description',
     });
   });
 
@@ -89,7 +87,42 @@ describe('Trello issue provider write operations', () => {
     });
   });
 
-  it('requires a default list when creating a card', async () => {
+  it('falls back to the first open board list when defaultListId is unset', async () => {
+    const get = vi.fn().mockResolvedValue([
+      { id: 'first-open-list', name: 'Backlog' },
+      { id: 'second-list', name: 'In Progress' },
+    ]);
+    const post = vi.fn().mockResolvedValue(trelloCard);
+    const http = { get, post } as unknown as PluginHttp;
+
+    const result = await definition.createIssue!(
+      'Test card',
+      { boardId: 'board-id' },
+      http,
+    );
+
+    expect(get).toHaveBeenCalledWith('https://api.trello.com/1/boards/board-id/lists', {
+      params: { filter: 'open', fields: 'name,id' },
+    });
+    expect(post).toHaveBeenCalledWith('https://api.trello.com/1/cards', {
+      name: 'Test card',
+      idList: 'first-open-list',
+    });
+    expect(result.issueId).toBe('abc123');
+  });
+
+  it('throws when defaultListId is unset and board has no open lists', async () => {
+    const get = vi.fn().mockResolvedValue([]);
+    const post = vi.fn();
+    const http = { get, post } as unknown as PluginHttp;
+
+    await expect(
+      definition.createIssue!('Test card', { boardId: 'board-id' }, http),
+    ).rejects.toThrow('ERRORS.DEFAULT_LIST_ID_REQUIRED');
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('throws when both defaultListId and boardId are missing', async () => {
     const post = vi.fn();
     const http = { post } as unknown as PluginHttp;
 
@@ -99,36 +132,69 @@ describe('Trello issue provider write operations', () => {
     expect(post).not.toHaveBeenCalled();
   });
 
-  it('archives a card instead of deleting it permanently', async () => {
-    const put = vi.fn().mockResolvedValue(undefined);
-    const http = { put } as unknown as PluginHttp;
-
-    await definition.deleteIssue!('abc123', {}, http);
-
-    expect(put).toHaveBeenCalledWith('https://api.trello.com/1/cards/abc123', {
-      closed: true,
-    });
+  it('does not expose deleteIssue to avoid unconditional remote archival', () => {
+    expect(definition.deleteIssue).toBeUndefined();
   });
 
-  it('exposes configurable mappings for status, title, and notes', () => {
-    expect(definition.fieldMappings).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          taskField: 'isDone',
-          issueField: 'state',
-          defaultDirection: 'pullOnly',
-        }),
-        expect.objectContaining({
-          taskField: 'title',
-          issueField: 'title',
-          defaultDirection: 'pullOnly',
-        }),
-        expect.objectContaining({
-          taskField: 'notes',
-          issueField: 'body',
-          defaultDirection: 'off',
-        }),
-      ]),
+  it('exposes configurable mappings for status and title', () => {
+    expect(definition.fieldMappings).toEqual([
+      expect.objectContaining({
+        taskField: 'isDone',
+        issueField: 'state',
+        defaultDirection: 'pullOnly',
+      }),
+      expect.objectContaining({
+        taskField: 'title',
+        issueField: 'title',
+        defaultDirection: 'pullOnly',
+      }),
+    ]);
+  });
+
+  it('loads open lists for the configured board', async () => {
+    const get = vi.fn().mockResolvedValue([
+      { id: 'list-1', name: 'To Do' },
+      { id: 'list-2', name: 'Doing' },
+    ]);
+    const http = { get } as unknown as PluginHttp;
+    const defaultListField = definition.configFields.find(
+      (f) => f.key === 'defaultListId',
     );
+    expect(defaultListField?.type).toBe('select');
+    expect(defaultListField?.loadOptions).toBeDefined();
+
+    const options = await defaultListField!.loadOptions!(
+      { apiKey: 'key', token: 'token', boardId: 'board-1' },
+      http,
+    );
+
+    expect(get).toHaveBeenCalledWith('https://api.trello.com/1/boards/board-1/lists', {
+      params: { filter: 'open', fields: 'name,id' },
+    });
+    expect(options).toEqual([
+      { label: 'To Do', value: 'list-1' },
+      { label: 'Doing', value: 'list-2' },
+    ]);
+  });
+
+  it('returns empty list options when credentials or boardId are missing', async () => {
+    const get = vi.fn();
+    const http = { get } as unknown as PluginHttp;
+    const defaultListField = definition.configFields.find(
+      (f) => f.key === 'defaultListId',
+    );
+
+    const optionsWithoutBoard = await defaultListField!.loadOptions!(
+      { apiKey: 'key', token: 'token' },
+      http,
+    );
+    expect(optionsWithoutBoard).toEqual([]);
+
+    const optionsWithoutAuth = await defaultListField!.loadOptions!(
+      { boardId: 'board-1' },
+      http,
+    );
+    expect(optionsWithoutAuth).toEqual([]);
+    expect(get).not.toHaveBeenCalled();
   });
 });
